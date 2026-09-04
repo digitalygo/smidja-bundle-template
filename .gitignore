@@ -1,0 +1,7 @@
+/dist/
+/coverage.out
+*.test
+/smidja-bundle-template
+/.env
+/bin/
+tmp/

@@ -1,0 +1,61 @@
+name: ci
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+
+      - name: Check formatting
+        run: test -z "$(gofmt -l .)"
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test with coverage
+        run: go test -count=1 -coverprofile=coverage.out ./...
+
+      - name: Coverage total
+        run: go tool cover -func=coverage.out
+
+      - name: Coverage threshold
+        run: |
+          total="$(go tool cover -func=coverage.out | awk '/^total:/ { sub(/%$/, "", $NF); print $NF }')"
+          if [[ -z "$total" ]]; then
+            echo "aggregate coverage total not found in go tool cover output" >&2
+            exit 1
+          fi
+          awk -v total="$total" 'BEGIN {
+            if (total + 0 < 80 || total + 0 > 100) {
+              printf "aggregate statement coverage %s%% is outside the required 80-100 range\n", total
+              exit 1
+            }
+          }'
+
+      - name: Release script syntax
+        run: bash -n scripts/*.sh
+
+      - name: Cross build release artifacts
+        run: ./scripts/build-release.sh v0.0.0-ci dist
+
+      - name: Verify checksums
+        run: cd dist && sha256sum -c checksums.txt
