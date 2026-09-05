@@ -8,15 +8,20 @@ import (
 	"testing"
 )
 
-const templateOrigin = "github.com/digitalygo/smidja-bundle-template"
+const identityTestPattern = "^(TestValidateIdentity|TestReadGoModIdentity|TestRepositoryIdentityMatchesGoMod|TestMinimumHarnessMatchesPinnedHarnessBase|TestBundleOriginMatchesGitHubRepository)$"
 
 func TestCustomizeScriptRewritesIdentity(t *testing.T) {
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skip("go toolchain is required to verify the customization build")
 	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is required to exercise the customization dirty-tree guard")
+	}
+	oldOrigin := currentBundleOrigin(t)
+	newOrigin := distinctBundleOrigin(t)
 	workDir := t.TempDir()
 	copyRepository(t, workDir)
-	newOrigin := "github.com/acme/cool-bundle"
+	commitRepository(t, workDir)
 
 	customize := exec.Command("bash", "scripts/customize.sh", newOrigin)
 	customize.Dir = workDir
@@ -39,27 +44,25 @@ func TestCustomizeScriptRewritesIdentity(t *testing.T) {
 	if !strings.Contains(string(bundleGo), `"`+newOrigin+`"`) {
 		t.Errorf("customized bundle.go does not carry origin %s:\n%s", newOrigin, bundleGo)
 	}
-	if strings.Contains(string(bundleGo), templateOrigin) {
-		t.Errorf("customized bundle.go still references the template origin:\n%s", bundleGo)
-	}
 
-	mainGo, err := os.ReadFile(filepath.Join(workDir, "main.go"))
-	if err != nil {
-		t.Fatalf("read customized main.go: %v", err)
-	}
-	if strings.Contains(string(mainGo), templateOrigin) {
-		t.Errorf("customized main.go still imports the template module path:\n%s", mainGo)
+	assertOriginAbsent(t, workDir, oldOrigin)
+
+	inner := exec.Command("go", "test", "-count=1", "-run", identityTestPattern, "./...")
+	inner.Dir = workDir
+	inner.Env = repositoryEnv(newOrigin)
+	if output, err := inner.CombinedOutput(); err != nil {
+		t.Fatalf("focused identity tests inside the customized copy: %v\n%s", err, output)
 	}
 }
 
-func TestCustomizeScriptRejectsTemplateOriginAndInvalidPaths(t *testing.T) {
+func TestCustomizeScriptRejectsCurrentOriginAndInvalidPaths(t *testing.T) {
 	workDir := t.TempDir()
 	copyRepository(t, workDir)
 	tests := []struct {
 		name string
 		arg  string
 	}{
-		{name: "unchanged template origin", arg: templateOrigin},
+		{name: "unchanged current origin", arg: currentBundleOrigin(t)},
 		{name: "missing repository", arg: "github.com/acme"},
 		{name: "not a github origin", arg: "gitlab.com/acme/cool-bundle"},
 		{name: "owner longer than 39 characters", arg: "github.com/" + strings.Repeat("a", 40) + "/cool-bundle"},
@@ -82,6 +85,59 @@ func TestCustomizeScriptRejectsTemplateOriginAndInvalidPaths(t *testing.T) {
 	}
 }
 
+func TestCustomizeScriptRejectsDirtyTree(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go toolchain is required to run the customization script")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is required to exercise the customization dirty-tree guard")
+	}
+	workDir := t.TempDir()
+	copyRepository(t, workDir)
+	commitRepository(t, workDir)
+	if err := os.WriteFile(filepath.Join(workDir, "README.md"), []byte("uncommitted change\n"), 0o644); err != nil {
+		t.Fatalf("dirty the copied repository: %v", err)
+	}
+	customize := exec.Command("bash", "scripts/customize.sh", distinctBundleOrigin(t))
+	customize.Dir = workDir
+	output, err := customize.CombinedOutput()
+	if err == nil {
+		t.Fatal("customize.sh on a dirty tree exited 0, want failure")
+	}
+	if !strings.Contains(string(output), "dirty") {
+		t.Errorf("customize.sh dirty-tree failure output %q does not mention the dirty tree", output)
+	}
+}
+
+func assertOriginAbsent(t *testing.T, root, origin string) {
+	t.Helper()
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			if entry.Name() == ".git" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if filepath.Ext(path) != ".go" && filepath.Base(path) != "go.mod" {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if strings.Contains(string(data), origin) {
+			t.Errorf("%s still references the old origin %s", path, origin)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk customized copy: %v", err)
+	}
+}
+
 func copyRepository(t *testing.T, destination string) {
 	t.Helper()
 	err := filepath.WalkDir(".", func(path string, entry os.DirEntry, walkErr error) error {
@@ -91,7 +147,7 @@ func copyRepository(t *testing.T, destination string) {
 		if path == "." {
 			return nil
 		}
-		if path == ".git" || path == "dist" || path == "coverage.out" {
+		if path == ".git" || path == "dist" || path == "coverage.out" || path == "tmp" {
 			if entry.IsDir() {
 				return filepath.SkipDir
 			}
@@ -110,4 +166,36 @@ func copyRepository(t *testing.T, destination string) {
 	if err != nil {
 		t.Fatalf("copy repository: %v", err)
 	}
+}
+
+func commitRepository(t *testing.T, dir string) {
+	t.Helper()
+	runGit(t, dir, "init")
+	runGit(t, dir, "config", "user.email", "bundle-test@example.com")
+	runGit(t, dir, "config", "user.name", "Bundle Test")
+	runGit(t, dir, "config", "commit.gpgsign", "false")
+	runGit(t, dir, "config", "tag.gpgsign", "false")
+	runGit(t, dir, "add", "-A")
+	runGit(t, dir, "commit", "--no-gpg-sign", "--no-verify", "-m", "bundle test snapshot")
+}
+
+func runGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)
+	}
+}
+
+func repositoryEnv(origin string) []string {
+	env := make([]string, 0, len(os.Environ())+1)
+	for _, entry := range os.Environ() {
+		if strings.HasPrefix(entry, "GITHUB_REPOSITORY=") {
+			continue
+		}
+		env = append(env, entry)
+	}
+	return append(env, "GITHUB_REPOSITORY="+strings.TrimPrefix(origin, "github.com/"))
 }

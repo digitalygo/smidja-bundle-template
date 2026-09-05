@@ -7,6 +7,8 @@ import (
 )
 
 func TestValidateIdentity(t *testing.T) {
+	currentOrigin := currentBundleOrigin(t)
+	distinctOrigin := distinctBundleOrigin(t)
 	pseudoVersion := "v0.2.1-0.20260904203549-a8a32dc552af"
 	tests := []struct {
 		name             string
@@ -18,9 +20,9 @@ func TestValidateIdentity(t *testing.T) {
 		wantErrorMessage string
 	}{
 		{
-			name:           "template identity with pseudo-version pin",
-			origin:         "github.com/digitalygo/smidja-bundle-template",
-			modulePath:     "github.com/digitalygo/smidja-bundle-template",
+			name:           "repository identity with pseudo-version pin",
+			origin:         currentOrigin,
+			modulePath:     currentOrigin,
 			harnessVersion: pseudoVersion,
 			minimumHarness: "v0.2.1",
 		},
@@ -49,8 +51,8 @@ func TestValidateIdentity(t *testing.T) {
 		},
 		{
 			name:             "module path does not match origin",
-			origin:           "github.com/acme/cool-bundle",
-			modulePath:       "github.com/digitalygo/smidja-bundle-template",
+			origin:           distinctOrigin,
+			modulePath:       currentOrigin,
 			harnessVersion:   pseudoVersion,
 			minimumHarness:   "v0.2.1",
 			wantErrorMessage: "must match bundle origin",
@@ -88,13 +90,13 @@ func TestValidateIdentity(t *testing.T) {
 			wantErrorMessage: "must be canonical",
 		},
 		{
-			name:             "generated repository still carries the template origin",
-			origin:           "github.com/digitalygo/smidja-bundle-template",
-			modulePath:       "github.com/digitalygo/smidja-bundle-template",
+			name:             "origin does not match the expected repository",
+			origin:           distinctOrigin,
+			modulePath:       distinctOrigin,
 			harnessVersion:   pseudoVersion,
 			minimumHarness:   "v0.2.1",
-			expectedOrigin:   "github.com/acme/cool-bundle",
-			wantErrorMessage: "run scripts/customize.sh github.com/acme/cool-bundle",
+			expectedOrigin:   currentOrigin,
+			wantErrorMessage: "run scripts/customize.sh " + currentOrigin,
 		},
 		{
 			name:           "generated repository after customization",
@@ -241,4 +243,27 @@ func TestBundleOriginMatchesGitHubRepository(t *testing.T) {
 	if bundleOrigin != want {
 		t.Errorf("bundle origin %q does not match this repository %q: a repository generated from the template must run scripts/customize.sh %s before its CI can pass", bundleOrigin, want, want)
 	}
+}
+
+func currentBundleOrigin(t *testing.T) string {
+	t.Helper()
+	data, err := os.ReadFile("go.mod")
+	if err != nil {
+		t.Fatalf("read go.mod: %v", err)
+	}
+	modulePath, _, err := readGoModIdentity(string(data))
+	if err != nil {
+		t.Fatalf("parse go.mod: %v", err)
+	}
+	return modulePath
+}
+
+func distinctBundleOrigin(t *testing.T) string {
+	t.Helper()
+	origin := currentBundleOrigin(t)
+	owner, repository, found := strings.Cut(strings.TrimPrefix(origin, "github.com/"), "/")
+	if !found {
+		t.Fatalf("bundle origin %q is not github.com/owner/repo", origin)
+	}
+	return "github.com/" + owner + "/renamed-" + repository
 }
