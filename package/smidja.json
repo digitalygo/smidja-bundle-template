@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "id": "example.coding",
+  "version": "1.0.0",
+  "publisher": "Example",
+  "requires_smidja": ">=1.0.0",
+  "scopes": [
+    "manager",
+    "client"
+  ],
+  "targets": [
+    "linux/amd64",
+    "linux/arm64",
+    "darwin/amd64",
+    "darwin/arm64"
+  ],
+  "teams": [
+    "teams/reviewer.json"
+  ],
+  "workflows": [
+    "workflows/pr-review.json"
+  ],
+  "tools": [
+    "tools/echo.json"
+  ],
+  "skills": [
+    "skills/review.md"
+  ],
+  "dependencies": [],
+  "configuration": {}
+}

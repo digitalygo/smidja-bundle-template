@@ -22,10 +22,10 @@ When edits touch the codebase, run the tests that cover the changed files before
 - If code seems to need a comment, simplify it or split it into smaller files instead.
 - Use descriptive names for variables, functions, and files in place of annotation.
 
-## Template invariants
+## Runtime package invariants
 
-- This repository is the canonical template for compiled smidja bundle distributions only. Do not add `smidja.json`, runtime content-package behavior, plugins, subprocess extensions, WASM, or dynamic code loading.
-- The go.mod require on `github.com/digitalygo/smidja` must stay pinned to an immutable go module version, never `alpha` or a branch name. `identity_test.go` rejects branch pins.
-- Release assets must be named exactly `smidja-linux-amd64`, `smidja-linux-arm64`, `smidja-darwin-amd64`, `smidja-darwin-arm64`, plus a sorted `checksums.txt`, so the harness self-updater can target the bundle origin baked in through ldflags.
-- The bundle origin must equal the go.mod module path and the GitHub repository the binary is released from. CI enforces this with `GITHUB_REPOSITORY`; repositories generated with Use this template fail until `scripts/customize.sh` runs.
-- `bundleOrigin`, `bundleVersion`, and `bundleCommit` in `bundle.go` are the single ldflags injection surface. Plain local builds must stay coherent with `dev` and `none` defaults.
+- This template authors schema 1 runtime packages, never replacement Smidja binaries.
+- Payloads use namespaced IDs, immutable versions, file digests and explicit per-target feeds.
+- Supported native targets are Linux/macOS amd64/arm64 only.
+- Build tooling must not publish releases or provision accounts. Credentials stay outside archives.
+- The legacy directory preserves the superseded compiled bundle and its original tests; it is not the supported build path.

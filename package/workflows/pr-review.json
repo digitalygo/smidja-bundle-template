@@ -1,0 +1,26 @@
+{
+  "id": "example.coding/pr-review",
+  "version": "1.0.0",
+  "phases": [
+    {
+      "id": "context",
+      "name": "Collect context",
+      "team_ref": "example.coding/reviewer"
+    },
+    {
+      "id": "analysis",
+      "name": "Analyze changes",
+      "team_ref": "example.coding/reviewer"
+    },
+    {
+      "id": "verification",
+      "name": "Verify findings",
+      "team_ref": "example.coding/reviewer"
+    },
+    {
+      "id": "synthesis",
+      "name": "Summarize review",
+      "team_ref": "example.coding/reviewer"
+    }
+  ]
+}
