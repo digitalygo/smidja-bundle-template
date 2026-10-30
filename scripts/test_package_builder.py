@@ -192,6 +192,24 @@ class PackageTests(unittest.TestCase):
         self.assertFalse(builder.same_json([1], [1, 2]))
         self.assertFalse(builder.same_json({"a": 1}, {"b": 1}))
 
+    def test_numeric_domain_applies_to_every_schema_value(self):
+        for token in ["1e9999", "1e-4097", "1" * 4097, "1" * 4600]:
+            number = builder.SchemaNumber(token)
+            for schema in [{"const": number}, {"enum": [{"nested": number}]}, {"const": {"nested": [number]}}]:
+                with self.subTest(token=token[:20], schema=list(schema)), self.assertRaises(ValueError):
+                    builder.validate_input_schema(schema)
+            payload = dict(self.payload)
+            payload["workflows/pr-review.json"] = payload["workflows/pr-review.json"].replace(
+                b'"input_schema": {', b'"input_schema": {"const": ' + token.encode() + b',')
+            with self.assertRaises(ValueError):
+                builder.validate(self.manifest, payload)
+        for number in [int("1" * 4097), float("inf"), float("nan")]:
+            with self.assertRaises(ValueError):
+                builder.validate_input_schema({"const": {"number": number}})
+        for token in ["1e4096", "1e-4096", "1" * 4096]:
+            builder.validate_input_schema({"enum": [{"nested": builder.SchemaNumber(token)}]})
+        builder.validate_input_schema({"const": {"boolean": True, "null": None}})
+
     def test_workflow_invocation_contract(self):
         for document in [{}, {"allowed_invokers": None}, {"allowed_invokers": []}, {"allowed_invokers": ["ceo", "team:example.coding/reviewer"]}]:
             builder.validate_workflow_contract(document)

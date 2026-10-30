@@ -53,8 +53,8 @@ class SchemaNumber(Decimal):
 
 
 def compact_schema(value):
-    if isinstance(value, Decimal):
-        require(value.is_finite(), "schema numbers must be finite")
+    if type(value) in {int, float, Decimal, SchemaNumber}:
+        require(bounded_number(value), "schema numbers exceed supported 4096-character/exponent domain")
         return getattr(value, "token", str(value))
     if isinstance(value, dict):
         return "{" + ",".join(json.dumps(key, ensure_ascii=False) + ":" + compact_schema(item) for key, item in value.items()) + "}"
@@ -155,7 +155,7 @@ def validate(manifest, files):
             if group == "skills":
                 files[name].decode("utf-8")
                 continue
-            document = json.loads(files[name], parse_float=SchemaNumber) if group == "workflows" else json.loads(files[name])
+            document = json.loads(files[name], parse_float=SchemaNumber, parse_int=SchemaNumber) if group == "workflows" else json.loads(files[name])
             identity = document.get("id", "")
             require(identity.startswith(package_id + "/") and len(identity) > len(package_id) + 1 and identity not in documents, "catalog ID must be unique and namespaced")
             documents[identity] = (group, document)
