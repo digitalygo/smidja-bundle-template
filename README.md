@@ -25,6 +25,8 @@ The example URL is deliberately not live. Building does not publish or install a
 
 Edit package/smidja.json identity, publisher, stable x.y.z version and minimum Smidja version. Update every namespaced team, tool, workflow ID and reference consistently. Add JSON documents under package and list them in the manifest. Helpers are built into a temporary staging directory, never committed as binaries.
 
+The sample PR review accepts supplied evidence, not a PR URL to fetch. Its input object requires request and repository (nonempty strings), base_sha and head_sha (exactly 40 characters), and diff (a string, possibly empty). Optional focus is a string and checks accepts any JSON value. Extra properties are rejected. SHA length is validated, not hexadecimal syntax. The owner can always launch it; allowed_invokers explicitly includes ceo for agent launches.
+
 The sample PR review has four phases: context, analysis, verification and synthesis. Its single team is intentionally a neutral starter, not an organizational coding standard. The sample echo tool demonstrates JSON stdin/stdout only. To inspect actual repositories, configure the team's appropriate runtime tool names and instructions; this package does not itself provide a GitHub integration. The manager owns task creation, full phase outputs, binary blocking classification and resume; none of those are recreated by the helper.
 
 Tool command paths beginning with ./ must name an inventoried file. Arguments are sent as a JSON object on stdin. Successful helpers emit JSON on stdout; errors write stderr and exit nonzero. The runtime wraps stdout as content, rather than assuming that a successful process means its JSON says success. Tool environment maps contain environment-variable references, never secret values. Missing credentials fail at invocation, not package installation; packages do not provision accounts.
@@ -55,3 +57,9 @@ scripts/package_builder.py is standard-library-only and reusable:
 The authoring validator checks local catalog references, IDs, environment references and file integrity. It intentionally requires referenced teams/tools to be present in this package; cross-package references need explicit dependency-aware authoring support rather than guessed IDs. The authoritative runtime remains Smidja's schema-1 installer and capability loader.
 
 Legacy tests can still be run independently with cd legacy && go test ./...; they are not runtime-package tests. Moving them did not remove their historical assertions.
+
+## Workflow input and invocation contracts
+
+A workflow may supply input_schema. Omission preserves compatibility with an unconstrained schema, while actual workflow inputs remain JSON objects. This example uses a strict object schema for supplied PR evidence. The supported schema keywords are type, properties, required, additionalProperties (boolean only), items, enum, const, minimum, maximum, minLength, maxLength, minItems, maxItems, description and title. Unsupported keywords, including pattern, $ref and $schema, are rejected. Schema nesting is limited to 32 levels and encoded schemas to 64 KiB; the runtime limits inputs to 1 MiB.
+
+allowed_invokers authorizes agents, not the owner: omitted means owner plus CEO, an explicit empty list means owner only, and entries may be ceo or team:<stable team reference>. Entries must be unique. This package explicitly chooses ["ceo"]. Stable references are checked at invocation; installing a package does not grant arbitrary agents access.

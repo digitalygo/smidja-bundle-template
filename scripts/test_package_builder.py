@@ -139,6 +139,74 @@ class PackageTests(unittest.TestCase):
             with self.subTest(mutation=mutation), self.assertRaises(ValueError):
                 builder.validate_archive(output.getvalue())
 
+    def test_workflow_schema_contract(self):
+        valid = [
+            {}, {"type": "object"}, {"type": "array", "items": {}},
+            {"properties": {"free": {}, "nested": {"type": "null"}}},
+            {"required": ["notDeclared", ""], "additionalProperties": True},
+            {"enum": [True, 1, None, "a", {}, []]}, {"const": {"any": [1, False]}},
+            {"minimum": -1.5, "maximum": 4.5},
+            {"minLength": 1.0, "maxLength": 0, "minItems": 0, "maxItems": 9223372036854775807},
+            {"title": "", "description": "documentation"},
+        ]
+        valid.extend([
+            {"minimum": builder.SchemaNumber("1e999"), "maximum": builder.SchemaNumber("1e4096")},
+            {"minimum": builder.SchemaNumber("1e-4096")},
+            {"enum": [builder.SchemaNumber("1.0"), True]},
+        ])
+        for schema in valid:
+            builder.validate_input_schema(schema)
+        for kind in ["object", "array", "string", "number", "integer", "boolean", "null"]:
+            builder.validate_input_schema({"type": kind})
+        invalid = [
+            None, False, [], "object", {"unknown": 1}, {"$ref": "#/x"},
+            {"$schema": "https://example.com"}, {"pattern": "[a-z]"},
+            {"type": ["string", "null"]}, {"type": "invalid"}, {"properties": []},
+            {"properties": {"bad": False}}, {"items": []}, {"required": "x"},
+            {"required": ["x", "x"]}, {"required": [1]}, {"additionalProperties": {}},
+            {"enum": []}, {"enum": "x"}, {"enum": [1, 1.0]},
+            {"enum": [{"x": [1, True]}, {"x": [1.0, True]}]},
+            {"minimum": True}, {"maximum": "2"}, {"minLength": -1},
+            {"maxLength": 1.5}, {"minItems": 9223372036854775808},
+            {"title": 1}, {"description": None}, {"description": "x" * (64 << 10)},
+            {"minimum": builder.SchemaNumber("1e4097")}, {"maximum": builder.SchemaNumber("1e-4097")},
+            {"minimum": int("1" * 4097)}, {"minimum": float("inf")},
+            {"minimum": builder.SchemaNumber("NaN")},
+            {"enum": [builder.SchemaNumber("1.0"), 1]},
+        ]
+        for schema in invalid:
+            with self.subTest(schema=str(schema)[:100]), self.assertRaises(ValueError):
+                builder.validate_input_schema(schema)
+        schema = {}
+        for _ in range(32):
+            schema = {"items": schema}
+        builder.validate_input_schema(schema)
+        with self.assertRaises(ValueError):
+            builder.validate_input_schema({"items": schema})
+        self.assertTrue(builder.same_json({"a": 1}, {"a": 1.0}))
+        payload = dict(self.payload)
+        payload["workflows/pr-review.json"] = payload["workflows/pr-review.json"].replace(b'"input_schema": {', b'"input_schema": {"maximum": 1e999,')
+        builder.validate(self.manifest, payload)
+        self.assertFalse(builder.same_json(True, 1))
+        self.assertFalse(builder.same_json(None, ""))
+        self.assertFalse(builder.same_json([1], [1, 2]))
+        self.assertFalse(builder.same_json({"a": 1}, {"b": 1}))
+
+    def test_workflow_invocation_contract(self):
+        for document in [{}, {"allowed_invokers": None}, {"allowed_invokers": []}, {"allowed_invokers": ["ceo", "team:example.coding/reviewer"]}]:
+            builder.validate_workflow_contract(document)
+        for invokers in ["ceo", {}, [1], ["ceo", "ceo"], ["team:"], ["team:  "], ["agent:reviewer"], ["owner"]]:
+            with self.subTest(invokers=invokers), self.assertRaises(ValueError):
+                builder.validate_workflow_contract({"allowed_invokers": invokers})
+        payload = dict(self.payload)
+        workflow = json.loads(payload["workflows/pr-review.json"])
+        self.assertEqual(workflow["allowed_invokers"], ["ceo"])
+        self.assertEqual(set(workflow["input_schema"]["required"]), {"request", "repository", "base_sha", "head_sha", "diff"})
+        for change in [{"input_schema": {"$ref": "x"}}, {"allowed_invokers": ["other"]}]:
+            payload["workflows/pr-review.json"] = builder.encoded(workflow | change)
+            with self.assertRaises(ValueError):
+                builder.validate(self.manifest, payload)
+
     def test_size_limits_and_cli(self):
         with patch.object(builder, "MAX_BYTES", 2), self.assertRaises(ValueError):
             builder.archive(self.source, "linux/amd64")

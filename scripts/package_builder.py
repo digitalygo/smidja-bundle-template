@@ -1,4 +1,5 @@
 import argparse
+from decimal import Decimal
 import hashlib
 import io
 import json
@@ -44,6 +45,92 @@ def https_url(value):
     return value.rstrip("/")
 
 
+class SchemaNumber(Decimal):
+    def __new__(cls, token):
+        value = super().__new__(cls, token)
+        value.token = token
+        return value
+
+
+def compact_schema(value):
+    if isinstance(value, Decimal):
+        require(value.is_finite(), "schema numbers must be finite")
+        return getattr(value, "token", str(value))
+    if isinstance(value, dict):
+        return "{" + ",".join(json.dumps(key, ensure_ascii=False) + ":" + compact_schema(item) for key, item in value.items()) + "}"
+    if isinstance(value, list):
+        return "[" + ",".join(compact_schema(item) for item in value) + "]"
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+
+
+def bounded_number(value):
+    if type(value) not in {int, float, Decimal, SchemaNumber}:
+        return False
+    token = getattr(value, "token", str(value))
+    exponent = re.search(r"[eE]([+-]?[0-9]+)$", token)
+    return len(token) <= 4096 and (not exponent or -4096 <= int(exponent[1]) <= 4096) and Decimal(token).is_finite()
+
+
+def same_json(left, right):
+    if type(left) is bool or type(right) is bool:
+        return type(left) is type(right) and left == right
+    if isinstance(left, (int, float, Decimal)) and isinstance(right, (int, float, Decimal)):
+        return left == right
+    if type(left) is not type(right):
+        return False
+    if isinstance(left, dict):
+        return left.keys() == right.keys() and all(same_json(value, right[key]) for key, value in left.items())
+    if isinstance(left, list):
+        return len(left) == len(right) and all(same_json(a, b) for a, b in zip(left, right))
+    return left == right
+
+
+def validate_input_schema(schema, depth=0):
+    require(isinstance(schema, dict) and depth <= 32, "input_schema must contain objects at depth at most 32")
+    if depth == 0:
+        require(len(compact_schema(schema).encode()) <= 64 << 10, "input_schema exceeds 64 KiB")
+    for key, value in schema.items():
+        if key in {"title", "description"}:
+            require(isinstance(value, str), key + " must be a string")
+        elif key == "type":
+            require(isinstance(value, str) and value in {"object", "array", "string", "number", "integer", "boolean", "null"}, "unsupported schema type")
+        elif key == "properties":
+            require(isinstance(value, dict), "properties must be an object")
+            for child in value.values():
+                validate_input_schema(child, depth + 1)
+        elif key == "items":
+            validate_input_schema(value, depth + 1)
+        elif key == "required":
+            require(isinstance(value, list) and all(isinstance(name, str) for name in value) and len(set(value)) == len(value), "required must contain unique strings")
+        elif key == "additionalProperties":
+            require(type(value) is bool, "additionalProperties must be boolean")
+        elif key == "enum":
+            require(isinstance(value, list) and value, "enum must be a nonempty array")
+            for index, item in enumerate(value):
+                require(not any(same_json(item, previous) for previous in value[:index]), "enum values must be unique")
+        elif key == "const":
+            pass
+        elif key in {"minimum", "maximum", "minLength", "maxLength", "minItems", "maxItems"}:
+            require(bounded_number(value), key + " must be a bounded numeric value")
+            if key not in {"minimum", "maximum"}:
+                require(value >= 0 and value <= (1 << 63) - 1 and int(value) == value, key + " must be a nonnegative bounded integer")
+        else:
+            raise ValueError("unsupported input_schema keyword " + key)
+
+
+def validate_workflow_contract(document):
+    if "input_schema" in document:
+        validate_input_schema(document["input_schema"])
+    if "allowed_invokers" not in document or document["allowed_invokers"] is None:
+        return
+    invokers = document["allowed_invokers"]
+    require(isinstance(invokers, list), "allowed_invokers must be an array")
+    seen = set()
+    for invoker in invokers:
+        require(isinstance(invoker, str) and (invoker == "ceo" or invoker.startswith("team:") and invoker[5:].strip()) and invoker not in seen, "invalid or duplicate allowed_invoker")
+        seen.add(invoker)
+
+
 def validate(manifest, files):
     require(set(manifest) <= FIELDS, "unknown manifest field")
     require(manifest.get("schema_version") == 1, "schema_version must be 1")
@@ -68,7 +155,7 @@ def validate(manifest, files):
             if group == "skills":
                 files[name].decode("utf-8")
                 continue
-            document = json.loads(files[name])
+            document = json.loads(files[name], parse_float=SchemaNumber) if group == "workflows" else json.loads(files[name])
             identity = document.get("id", "")
             require(identity.startswith(package_id + "/") and len(identity) > len(package_id) + 1 and identity not in documents, "catalog ID must be unique and namespaced")
             documents[identity] = (group, document)
@@ -90,6 +177,7 @@ def validate(manifest, files):
             for key, value in document.get("environment", {}).items():
                 require(re.fullmatch(r"[A-Z_][A-Z0-9_]*", key) and re.fullmatch(r"[A-Z_][A-Z0-9_]*", value), "environment values must be references")
         if group == "workflows":
+            validate_workflow_contract(document)
             phases = document.get("phases", [])
             require(phases, "workflow phases required")
             seen = set()
