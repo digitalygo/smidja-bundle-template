@@ -27,7 +27,7 @@ jobs:
         run: |
           python3 -m trace --count --missing --summary --coverdir /tmp/python-coverage --module unittest discover -s scripts > /tmp/python-report.txt 2>&1
           cat /tmp/python-report.txt
-          awk '$3 == "package_builder" {gsub(/%/, "", $2); found=1; if ($2 < 80 || $2 > 100) exit 1} END {if (!found) exit 1}' /tmp/python-report.txt
+          awk '$3 == "package_builder" {gsub(/%/, "", $2); coverage=$2+0; found=1; if (coverage < 80 || coverage > 100) exit 1} END {if (!found) exit 1}' /tmp/python-report.txt
       - name: Build four package archives
         run: bash scripts/build-packages.sh dist https://publisher.example/packages/example.coding/1.0.0
       - name: Validate archives

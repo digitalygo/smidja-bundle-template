@@ -35,8 +35,12 @@ def relative(name):
 
 
 def https_url(value):
+    require(isinstance(value, str) and value and not any(character.isspace() or ord(character) < 32 or ord(character) == 127 for character in value), "source URL must not contain whitespace or controls")
+    require(not any(character in value for character in "?#\\") and re.search(r"%(?![0-9a-fA-F]{2})", value) is None, "source URL has invalid delimiters or escaping")
     url = urlsplit(value)
-    require(url.scheme == "https" and url.hostname and not url.username and not url.password and not url.query and not url.fragment, "source requires clean HTTPS URL")
+    require(url.scheme == "https" and url.hostname and url.username is None and url.password is None, "source requires clean HTTPS URL")
+    require(re.fullmatch(r"(?:\[[0-9a-fA-F:.]+\]|[^:/@\[\]\\%]+)(?::[0-9]+)?", url.netloc), "source URL has invalid authority")
+    require(url.port is None or 1 <= url.port <= 65535, "source URL has invalid port")
     return value.rstrip("/")
 
 

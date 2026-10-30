@@ -95,9 +95,20 @@ class PackageTests(unittest.TestCase):
         for name in ["", ".", "../a", "/a", "a/../b", "a//b", "a\\b", "a:b", "a\0b"]:
             with self.subTest(name=name), self.assertRaises(ValueError):
                 builder.relative(name)
-        for url in ["http://example.com/a", "https://user:pass@example.com/a", "https://example.com/a?token=x", "https://example.com/#x", "/local"]:
+        for url in [
+            "http://example.com/a", "https://user:pass@example.com/a", "https://example.com/a?token=x", "https://example.com/#x", "/local",
+            "https://example.com/base?", "https://example.com/base#", "https://@example.com/base", "https://:@example.com/base",
+            " https://example.com/base", "https://example.com/with space", "https://example.com/base\t", "https://example.com/\nbase",
+            "https://example.com/\x00base", "https://example.com/\x7fbase", "https://example.com/\u00a0base",
+            "https:///base", "https://:443/base", "https://example.com:/base", "https://example.com:abc/base",
+            "https://example.com:65536/base", "https://example.com:0/base", "https://[::1]suffix/base",
+            "https://[bad]/base", "https://example%zz.com/base", "https://example.com/%zz",
+            "https://example.com\\base", "https://example.com:443:4/base",
+        ]:
             with self.subTest(url=url), self.assertRaises(ValueError):
                 builder.https_url(url)
+        for url in ["https://example.com/base", "https://example.com:8443/base", "https://[::1]:8443/base", "https://example.com/a%20b"]:
+            self.assertEqual(builder.https_url(url + "/"), url)
         with self.assertRaises(ValueError):
             builder.archive(self.source, "linux/armv7")
         (self.source / "link").symlink_to(self.source / "bin/helper")
