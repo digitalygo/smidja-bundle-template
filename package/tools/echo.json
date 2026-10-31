@@ -1,0 +1,21 @@
+{
+  "id": "example.coding/echo",
+  "name": "echo",
+  "description": "Return supplied text; local demonstration without external services.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "text": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "required": [
+      "text"
+    ],
+    "additionalProperties": false
+  },
+  "command": [
+    "./bin/helper"
+  ]
+}

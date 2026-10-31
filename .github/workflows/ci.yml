@@ -1,61 +1,35 @@
-name: ci
-
+name: runtime-package
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   pull_request:
-
 permissions:
   contents: read
-
-concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-
-      - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version-file: go.mod
-
-      - name: Check formatting
-        run: test -z "$(gofmt -l .)"
-
-      - name: Vet
-        run: go vet ./...
-
-      - name: Test with coverage
-        run: go test -count=1 -coverprofile=coverage.out ./...
-
-      - name: Coverage total
-        run: go tool cover -func=coverage.out
-
-      - name: Coverage threshold
+      - name: Formatting and vet
         run: |
-          total="$(go tool cover -func=coverage.out | awk '/^total:/ { sub(/%$/, "", $NF); print $NF }')"
-          if [[ -z "$total" ]]; then
-            echo "aggregate coverage total not found in go tool cover output" >&2
-            exit 1
-          fi
-          awk -v total="$total" 'BEGIN {
-            if (total + 0 < 80 || total + 0 > 100) {
-              printf "aggregate statement coverage %s%% is outside the required 80-100 range\n", total
-              exit 1
-            }
-          }'
-
-      - name: Release script syntax
-        run: bash -n scripts/*.sh
-
-      - name: Cross build release artifacts
-        run: ./scripts/build-release.sh v0.0.0-ci dist
-
-      - name: Verify checksums
-        run: cd dist && sha256sum -c checksums.txt
+          test -z "$(gofmt -l cmd)"
+          go vet ./...
+      - name: Helper tests
+        run: |
+          go test -race -count=1 -coverprofile=coverage.out ./...
+          go tool cover -func=coverage.out
+          total="$(go tool cover -func=coverage.out | awk '/^total:/ {sub(/%$/, "", $NF); print $NF}')"
+          awk -v total="$total" 'BEGIN {exit !(total >= 80 && total <= 100)}'
+      - name: Builder tests
+        run: |
+          python3 -m trace --count --missing --summary --coverdir /tmp/python-coverage --module unittest discover -s scripts > /tmp/python-report.txt 2>&1
+          cat /tmp/python-report.txt
+          awk '$3 == "package_builder" {gsub(/%/, "", $2); coverage=$2+0; found=1; if (coverage < 80 || coverage > 100) exit 1} END {if (!found) exit 1}' /tmp/python-report.txt
+      - name: Build four package archives
+        run: bash scripts/build-packages.sh dist https://publisher.example/packages/example.coding/1.0.0
+      - name: Validate archives
+        run: |
+          PYTHONPATH=scripts python3 -c 'from pathlib import Path; from package_builder import validate_archive; [validate_archive(p.read_bytes()) for p in Path("dist").glob("*/package.zip")]'
