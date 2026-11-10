@@ -161,9 +161,12 @@ def validate(manifest, files):
             documents[identity] = (group, document)
     for identity, (group, document) in documents.items():
         if group == "teams":
-            require(document.get("name") and document.get("agents"), "team needs name and agents")
+            require(isinstance(document.get("name"), str) and document["name"].strip() and isinstance(document.get("agents"), list) and document["agents"], "team needs name and agents")
+            agent_names = set()
             for agent in document["agents"]:
-                require(agent.get("name") and agent.get("instructions"), "agent needs name and instructions")
+                require(isinstance(agent, dict) and all(isinstance(agent.get(field), str) and agent[field].strip() for field in ("name", "model", "instructions")), "agent needs nonempty name, model and instructions")
+                require(len(agent["name"].encode("utf-8")) <= 255 and agent["name"] not in agent_names, "agent names must be unique and at most 255 bytes")
+                agent_names.add(agent["name"])
                 for tool in agent.get("tools", []):
                     require(tool in documents and documents[tool][0] == "tools" or tool in {"bash", "read", "write", "edit", "grep", "list", "git_status", "git_diff"}, "unknown team tool")
         if group == "tools":

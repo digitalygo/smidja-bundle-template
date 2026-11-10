@@ -27,6 +27,8 @@ Edit package/smidja.json identity, publisher, stable x.y.z version and minimum S
 
 The sample PR review accepts supplied evidence, not a PR URL to fetch. Its input object requires request and repository (nonempty strings), base_sha and head_sha (exactly 40 characters), and diff (a string, possibly empty). Optional focus is a string and checks accepts any JSON value. Extra properties are rejected. SHA length is validated, not hexadecimal syntax. The owner can always launch it; allowed_invokers explicitly includes ceo for agent launches.
 
+Every Lid agent requires a nonempty name, explicit model and instructions. Agent names must be unique within a Lid and at most 255 UTF-8 bytes. The sample selects openai/gpt-6.1-terra, matching the organization package; replace it with a model available to your Envai account before publishing. There is no implicit model fallback during Lid materialization.
+
 The sample PR review has four phases: context, analysis, verification and synthesis. Its single Lid is intentionally a neutral starter, not an organizational coding standard. The sample echo tool demonstrates JSON stdin/stdout only. To inspect actual repositories, configure the Lid's appropriate runtime tool names and instructions; this package does not itself provide a GitHub integration. The manager owns task creation, full phase outputs, binary blocking classification and resume; none of those are recreated by the helper.
 
 Tool command paths beginning with ./ must name an inventoried file. Arguments are sent as a JSON object on stdin. Successful helpers emit JSON on stdout; errors write stderr and exit nonzero. The runtime wraps stdout as content, rather than assuming that a successful process means its JSON says success. Tool environment maps contain environment-variable references, never secret values. Missing credentials fail at invocation, not package installation; packages do not provision accounts.
@@ -45,7 +47,7 @@ The current runtime does not select platform assets automatically. Never install
 
 Installing trusts the chosen publisher's future updates. Extra agent-created extensions still use the separate approval flow. Dependencies are exact version/digest pins and must already be installed; this template's closed example has none. Changing an installed package's files is not customization: publish a new immutable version, or create private configuration outside the package.
 
-No package releases exist from this draft. requires_smidja >=1.0.0 is an example compatibility floor for the new runtime, not a claim that Smidja 1.0.0 has been released.
+No package releases exist from this draft. requires_smidja >=1.0.0 is an example compatibility floor for the new runtime, not a claim that Smidja 1.0.0 has been released. The runtime enforces this floor: older versions and unversioned development builds (0.0.0) reject these archives. Set the floor to the actual compatible revamp release before publishing; do not lower it solely to bypass the installation check.
 
 ## Validation
 

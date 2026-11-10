@@ -67,7 +67,7 @@ class PackageTests(unittest.TestCase):
             ("teams/reviewer.json", {"id": "foreign/reviewer"}),
             ("teams/reviewer.json", {"agents": []}),
             ("teams/reviewer.json", {"agents": [{"name": "a"}]}),
-            ("teams/reviewer.json", {"agents": [{"name": "a", "instructions": "x", "tools": ["missing"]}]}),
+            ("teams/reviewer.json", {"agents": [{"name": "a", "model": "test/model", "instructions": "x", "tools": ["missing"]}]}),
             ("tools/echo.json", {"id": "example.coding/reviewer"}),
             ("tools/echo.json", {"parameters": []}),
             ("tools/echo.json", {"command": ["./missing"]}),
@@ -90,6 +90,50 @@ class PackageTests(unittest.TestCase):
         document["environment"] = {"KEY": "API_KEY"}
         payload["tools/echo.json"] = builder.encoded(document)
         builder.validate(self.manifest, payload)
+
+    def test_agent_materialization_contract(self):
+        original = json.loads(self.payload["teams/reviewer.json"])
+        self.assertEqual(original["agents"][0]["model"], "openai/gpt-6.1-terra")
+        for field in ("name", "model", "instructions"):
+            for value in (None, "", " \t\r\n", True, 42, [], {}):
+                with self.subTest(field=field, value=value):
+                    team = copy.deepcopy(original)
+                    team["agents"][0][field] = value
+                    payload = self.payload | {"teams/reviewer.json": builder.encoded(team)}
+                    with self.assertRaisesRegex(ValueError, "agent needs nonempty name, model and instructions"):
+                        builder.validate(self.manifest, payload)
+            team = copy.deepcopy(original)
+            del team["agents"][0][field]
+            with self.subTest(missing=field), self.assertRaises(ValueError):
+                builder.validate(self.manifest, self.payload | {"teams/reviewer.json": builder.encoded(team)})
+        for name in (None, "", " ", 42):
+            with self.subTest(team_name=name), self.assertRaisesRegex(ValueError, "team needs name and agents"):
+                builder.validate(self.manifest, self.payload | {"teams/reviewer.json": builder.encoded(original | {"name": name})})
+        for agents in (None, "reviewer", {}, [None], [[]], ["reviewer"]):
+            with self.subTest(agents=agents), self.assertRaises(ValueError):
+                builder.validate(self.manifest, self.payload | {"teams/reviewer.json": builder.encoded(original | {"agents": agents})})
+        for name in ("x" * 256, "é" * 128):
+            team = copy.deepcopy(original)
+            team["agents"][0]["name"] = name
+            with self.subTest(name=name), self.assertRaisesRegex(ValueError, "unique and at most 255 bytes"):
+                builder.validate(self.manifest, self.payload | {"teams/reviewer.json": builder.encoded(team)})
+        duplicate = original | {"agents": original["agents"] * 2}
+        with self.assertRaisesRegex(ValueError, "unique and at most 255 bytes"):
+            builder.validate(self.manifest, self.payload | {"teams/reviewer.json": builder.encoded(duplicate)})
+        team = copy.deepcopy(original)
+        team["agents"][0]["name"] = "x" * 255
+        team["agents"][0]["model"] = " provider/model "
+        builder.validate(self.manifest, self.payload | {"teams/reviewer.json": builder.encoded(team)})
+
+    def test_build_rejects_missing_model_before_writing_output(self):
+        team = json.loads(self.payload["teams/reviewer.json"])
+        del team["agents"][0]["model"]
+        self.payload["teams/reviewer.json"] = builder.encoded(team)
+        self.write_source()
+        output = self.root / "invalid-output"
+        with self.assertRaisesRegex(ValueError, "agent needs nonempty name, model and instructions"):
+            builder.build(self.source, output, "linux/amd64", "https://example.com/1.0.0")
+        self.assertFalse(output.exists())
 
     def test_paths_urls_and_symlinks(self):
         for name in ["", ".", "../a", "/a", "a/../b", "a//b", "a\\b", "a:b", "a\0b"]:
