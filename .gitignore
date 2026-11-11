@@ -5,3 +5,6 @@
 /.env
 /bin/
 tmp/
+
+__pycache__/
+*.cover

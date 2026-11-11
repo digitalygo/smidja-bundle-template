@@ -1,0 +1,284 @@
+import copy
+import io
+import json
+from pathlib import Path
+import tempfile
+import unittest
+from unittest.mock import patch
+import zipfile
+import package_builder as builder
+
+
+class PackageTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.source = self.root / "source"
+        self.source.mkdir()
+        self.manifest = json.loads((Path(__file__).resolve().parents[1] / "package/smidja.json").read_text())
+        self.payload = {}
+        original = Path(__file__).resolve().parents[1] / "package"
+        for path in original.rglob("*"):
+            if path.is_file() and path.name != "smidja.json":
+                self.payload[path.relative_to(original).as_posix()] = path.read_bytes()
+        self.payload["bin/helper"] = b"native-test-fixture"
+        self.write_source()
+
+    def write_source(self):
+        (self.source / "smidja.json").write_bytes(builder.encoded(self.manifest))
+        for name, data in self.payload.items():
+            path = self.source / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+        (self.source / "bin/helper").chmod(0o755)
+
+    def test_build_all_targets_and_determinism(self):
+        for target in builder.TARGETS:
+            output = builder.build(self.source, self.root / "dist", target, "https://example.com/1.0.0/")
+            data = (output / "package.zip").read_bytes()
+            manifest = builder.validate_archive(data)
+            self.assertEqual(manifest["targets"], [target])
+            self.assertTrue(next(entry for entry in manifest["files"] if entry["path"] == "bin/helper")["executable"])
+            release = json.loads((output / "release.json").read_text())
+            self.assertEqual(release["sha256"], builder.digest(data))
+            self.assertEqual(release["archive_url"], "https://example.com/1.0.0/" + target.replace("/", "-") + "/package.zip")
+            self.assertEqual(builder.archive(self.source, target)[1], data)
+
+    def test_manifest_rejections(self):
+        variants = [
+            {"schema_version": 0}, {"id": "../bad"}, {"version": "v1.0.0"},
+            {"requires_smidja": "^1.0.0"}, {"publisher": ""},
+            {"targets": ["linux/armv7"]}, {"scopes": ["remote"]},
+            {"unknown": True}, {"teams": ["missing.json"]},
+            {"skills": ["teams/reviewer.json"]},
+            {"configuration": {"bad-name": {"secret": True}}},
+            {"configuration": {"TOKEN": {"secret": "yes"}}},
+            {"dependencies": [{"id": "other", "version": "1.0.0", "digest": "bad"}]},
+            {"dependencies": [{"id": "example.coding", "version": "1.0.0", "digest": "a" * 64}]},
+        ]
+        for variant in variants:
+            with self.subTest(variant=variant), self.assertRaises(ValueError):
+                builder.validate(self.manifest | variant, self.payload)
+        builder.validate(self.manifest | {"dependencies": [{"id": "other", "version": "1.0.0", "digest": "a" * 64}], "configuration": {"TOKEN": {"secret": True}}}, self.payload)
+
+    def test_catalog_rejections(self):
+        changes = [
+            ("teams/reviewer.json", {"id": "foreign/reviewer"}),
+            ("teams/reviewer.json", {"agents": []}),
+            ("teams/reviewer.json", {"agents": [{"name": "a"}]}),
+            ("teams/reviewer.json", {"agents": [{"name": "a", "model": "test/model", "instructions": "x", "tools": ["missing"]}]}),
+            ("tools/echo.json", {"id": "example.coding/reviewer"}),
+            ("tools/echo.json", {"parameters": []}),
+            ("tools/echo.json", {"command": ["./missing"]}),
+            ("tools/echo.json", {"client_id": "laptop"}),
+            ("tools/echo.json", {"timeout_seconds": -1}),
+            ("tools/echo.json", {"timeout_seconds": 601}),
+            ("tools/echo.json", {"timeout_seconds": True}),
+            ("tools/echo.json", {"environment": {"KEY": "literal secret"}}),
+            ("workflows/pr-review.json", {"phases": []}),
+            ("workflows/pr-review.json", {"phases": [{"id": "a", "name": "a", "team_ref": "missing"}]}),
+            ("workflows/pr-review.json", {"phases": [{"id": "", "team_ref": "example.coding/reviewer"}]}),
+        ]
+        for name, change in changes:
+            payload = dict(self.payload)
+            payload[name] = builder.encoded(json.loads(payload[name]) | change)
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                builder.validate(self.manifest, payload)
+        payload = dict(self.payload)
+        document = json.loads(payload["tools/echo.json"])
+        document["environment"] = {"KEY": "API_KEY"}
+        payload["tools/echo.json"] = builder.encoded(document)
+        builder.validate(self.manifest, payload)
+
+    def test_agent_materialization_contract(self):
+        original = json.loads(self.payload["teams/reviewer.json"])
+        self.assertEqual(original["agents"][0]["model"], "openai/gpt-6.1-terra")
+        for field in ("name", "model", "instructions"):
+            for value in (None, "", " \t\r\n", True, 42, [], {}):
+                with self.subTest(field=field, value=value):
+                    team = copy.deepcopy(original)
+                    team["agents"][0][field] = value
+                    payload = self.payload | {"teams/reviewer.json": builder.encoded(team)}
+                    with self.assertRaisesRegex(ValueError, "agent needs nonempty name, model and instructions"):
+                        builder.validate(self.manifest, payload)
+            team = copy.deepcopy(original)
+            del team["agents"][0][field]
+            with self.subTest(missing=field), self.assertRaises(ValueError):
+                builder.validate(self.manifest, self.payload | {"teams/reviewer.json": builder.encoded(team)})
+        for name in (None, "", " ", 42):
+            with self.subTest(team_name=name), self.assertRaisesRegex(ValueError, "team needs name and agents"):
+                builder.validate(self.manifest, self.payload | {"teams/reviewer.json": builder.encoded(original | {"name": name})})
+        for agents in (None, "reviewer", {}, [None], [[]], ["reviewer"]):
+            with self.subTest(agents=agents), self.assertRaises(ValueError):
+                builder.validate(self.manifest, self.payload | {"teams/reviewer.json": builder.encoded(original | {"agents": agents})})
+        for name in ("x" * 256, "é" * 128):
+            team = copy.deepcopy(original)
+            team["agents"][0]["name"] = name
+            with self.subTest(name=name), self.assertRaisesRegex(ValueError, "unique and at most 255 bytes"):
+                builder.validate(self.manifest, self.payload | {"teams/reviewer.json": builder.encoded(team)})
+        duplicate = original | {"agents": original["agents"] * 2}
+        with self.assertRaisesRegex(ValueError, "unique and at most 255 bytes"):
+            builder.validate(self.manifest, self.payload | {"teams/reviewer.json": builder.encoded(duplicate)})
+        team = copy.deepcopy(original)
+        team["agents"][0]["name"] = "x" * 255
+        team["agents"][0]["model"] = " provider/model "
+        builder.validate(self.manifest, self.payload | {"teams/reviewer.json": builder.encoded(team)})
+
+    def test_build_rejects_missing_model_before_writing_output(self):
+        team = json.loads(self.payload["teams/reviewer.json"])
+        del team["agents"][0]["model"]
+        self.payload["teams/reviewer.json"] = builder.encoded(team)
+        self.write_source()
+        output = self.root / "invalid-output"
+        with self.assertRaisesRegex(ValueError, "agent needs nonempty name, model and instructions"):
+            builder.build(self.source, output, "linux/amd64", "https://example.com/1.0.0")
+        self.assertFalse(output.exists())
+
+    def test_paths_urls_and_symlinks(self):
+        for name in ["", ".", "../a", "/a", "a/../b", "a//b", "a\\b", "a:b", "a\0b"]:
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                builder.relative(name)
+        for url in [
+            "http://example.com/a", "https://user:pass@example.com/a", "https://example.com/a?token=x", "https://example.com/#x", "/local",
+            "https://example.com/base?", "https://example.com/base#", "https://@example.com/base", "https://:@example.com/base",
+            " https://example.com/base", "https://example.com/with space", "https://example.com/base\t", "https://example.com/\nbase",
+            "https://example.com/\x00base", "https://example.com/\x7fbase", "https://example.com/\u00a0base",
+            "https:///base", "https://:443/base", "https://example.com:/base", "https://example.com:abc/base",
+            "https://example.com:65536/base", "https://example.com:0/base", "https://[::1]suffix/base",
+            "https://[bad]/base", "https://example%zz.com/base", "https://example.com/%zz",
+            "https://example.com\\base", "https://example.com:443:4/base",
+        ]:
+            with self.subTest(url=url), self.assertRaises(ValueError):
+                builder.https_url(url)
+        for url in ["https://example.com/base", "https://example.com:8443/base", "https://[::1]:8443/base", "https://example.com/a%20b"]:
+            self.assertEqual(builder.https_url(url + "/"), url)
+        with self.assertRaises(ValueError):
+            builder.archive(self.source, "linux/armv7")
+        (self.source / "link").symlink_to(self.source / "bin/helper")
+        with self.assertRaises(ValueError):
+            builder.archive(self.source, "linux/amd64")
+
+    def test_archive_tampering(self):
+        _, original = builder.archive(self.source, "linux/amd64")
+        for mutation in ["digest", "missing", "unlisted", "duplicate", "directory", "traversal", "inventory"]:
+            source = zipfile.ZipFile(io.BytesIO(original))
+            output = io.BytesIO()
+            with zipfile.ZipFile(output, "w") as target:
+                for entry in source.infolist():
+                    data = source.read(entry)
+                    if mutation == "missing" and entry.filename == "bin/helper":
+                        continue
+                    if mutation == "digest" and entry.filename == "bin/helper":
+                        data += b"x"
+                    if mutation == "inventory" and entry.filename == "smidja.json":
+                        manifest = json.loads(data)
+                        manifest["files"].append(copy.deepcopy(manifest["files"][0]))
+                        data = builder.encoded(manifest)
+                    target.writestr(entry, data)
+                if mutation in {"unlisted", "traversal", "directory"}:
+                    target.writestr({"unlisted": "extra", "traversal": "../evil", "directory": "folder/"}[mutation], "x")
+                if mutation == "duplicate":
+                    target.writestr(source.getinfo("bin/helper"), b"again")
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                builder.validate_archive(output.getvalue())
+
+    def test_workflow_schema_contract(self):
+        valid = [
+            {}, {"type": "object"}, {"type": "array", "items": {}},
+            {"properties": {"free": {}, "nested": {"type": "null"}}},
+            {"required": ["notDeclared", ""], "additionalProperties": True},
+            {"enum": [True, 1, None, "a", {}, []]}, {"const": {"any": [1, False]}},
+            {"minimum": -1.5, "maximum": 4.5},
+            {"minLength": 1.0, "maxLength": 0, "minItems": 0, "maxItems": 9223372036854775807},
+            {"title": "", "description": "documentation"},
+        ]
+        valid.extend([
+            {"minimum": builder.SchemaNumber("1e999"), "maximum": builder.SchemaNumber("1e4096")},
+            {"minimum": builder.SchemaNumber("1e-4096")},
+            {"enum": [builder.SchemaNumber("1.0"), True]},
+        ])
+        for schema in valid:
+            builder.validate_input_schema(schema)
+        for kind in ["object", "array", "string", "number", "integer", "boolean", "null"]:
+            builder.validate_input_schema({"type": kind})
+        invalid = [
+            None, False, [], "object", {"unknown": 1}, {"$ref": "#/x"},
+            {"$schema": "https://example.com"}, {"pattern": "[a-z]"},
+            {"type": ["string", "null"]}, {"type": "invalid"}, {"properties": []},
+            {"properties": {"bad": False}}, {"items": []}, {"required": "x"},
+            {"required": ["x", "x"]}, {"required": [1]}, {"additionalProperties": {}},
+            {"enum": []}, {"enum": "x"}, {"enum": [1, 1.0]},
+            {"enum": [{"x": [1, True]}, {"x": [1.0, True]}]},
+            {"minimum": True}, {"maximum": "2"}, {"minLength": -1},
+            {"maxLength": 1.5}, {"minItems": 9223372036854775808},
+            {"title": 1}, {"description": None}, {"description": "x" * (64 << 10)},
+            {"minimum": builder.SchemaNumber("1e4097")}, {"maximum": builder.SchemaNumber("1e-4097")},
+            {"minimum": int("1" * 4097)}, {"minimum": float("inf")},
+            {"minimum": builder.SchemaNumber("NaN")},
+            {"enum": [builder.SchemaNumber("1.0"), 1]},
+        ]
+        for schema in invalid:
+            with self.subTest(schema=str(schema)[:100]), self.assertRaises(ValueError):
+                builder.validate_input_schema(schema)
+        schema = {}
+        for _ in range(32):
+            schema = {"items": schema}
+        builder.validate_input_schema(schema)
+        with self.assertRaises(ValueError):
+            builder.validate_input_schema({"items": schema})
+        self.assertTrue(builder.same_json({"a": 1}, {"a": 1.0}))
+        payload = dict(self.payload)
+        payload["workflows/pr-review.json"] = payload["workflows/pr-review.json"].replace(b'"input_schema": {', b'"input_schema": {"maximum": 1e999,')
+        builder.validate(self.manifest, payload)
+        self.assertFalse(builder.same_json(True, 1))
+        self.assertFalse(builder.same_json(None, ""))
+        self.assertFalse(builder.same_json([1], [1, 2]))
+        self.assertFalse(builder.same_json({"a": 1}, {"b": 1}))
+
+    def test_numeric_domain_applies_to_every_schema_value(self):
+        for token in ["1e9999", "1e-4097", "1" * 4097, "1" * 4600]:
+            number = builder.SchemaNumber(token)
+            for schema in [{"const": number}, {"enum": [{"nested": number}]}, {"const": {"nested": [number]}}]:
+                with self.subTest(token=token[:20], schema=list(schema)), self.assertRaises(ValueError):
+                    builder.validate_input_schema(schema)
+            payload = dict(self.payload)
+            payload["workflows/pr-review.json"] = payload["workflows/pr-review.json"].replace(
+                b'"input_schema": {', b'"input_schema": {"const": ' + token.encode() + b',')
+            with self.assertRaises(ValueError):
+                builder.validate(self.manifest, payload)
+        for number in [int("1" * 4097), float("inf"), float("nan")]:
+            with self.assertRaises(ValueError):
+                builder.validate_input_schema({"const": {"number": number}})
+        for token in ["1e4096", "1e-4096", "1" * 4096]:
+            builder.validate_input_schema({"enum": [{"nested": builder.SchemaNumber(token)}]})
+        builder.validate_input_schema({"const": {"boolean": True, "null": None}})
+
+    def test_workflow_invocation_contract(self):
+        for document in [{}, {"allowed_invokers": None}, {"allowed_invokers": []}, {"allowed_invokers": ["ceo", "team:example.coding/reviewer"]}]:
+            builder.validate_workflow_contract(document)
+        for invokers in ["ceo", {}, [1], ["ceo", "ceo"], ["team:"], ["team:  "], ["agent:reviewer"], ["owner"]]:
+            with self.subTest(invokers=invokers), self.assertRaises(ValueError):
+                builder.validate_workflow_contract({"allowed_invokers": invokers})
+        payload = dict(self.payload)
+        workflow = json.loads(payload["workflows/pr-review.json"])
+        self.assertEqual(workflow["allowed_invokers"], ["ceo"])
+        self.assertEqual(set(workflow["input_schema"]["required"]), {"request", "repository", "base_sha", "head_sha", "diff"})
+        for change in [{"input_schema": {"$ref": "x"}}, {"allowed_invokers": ["other"]}]:
+            payload["workflows/pr-review.json"] = builder.encoded(workflow | change)
+            with self.assertRaises(ValueError):
+                builder.validate(self.manifest, payload)
+
+    def test_size_limits_and_cli(self):
+        with patch.object(builder, "MAX_BYTES", 2), self.assertRaises(ValueError):
+            builder.archive(self.source, "linux/amd64")
+        _, data = builder.archive(self.source, "linux/amd64")
+        with patch.object(builder, "MAX_BYTES", 2), self.assertRaises(ValueError):
+            builder.validate_archive(data)
+        with patch("sys.argv", ["package_builder", str(self.source), str(self.root / "cli"), "linux/amd64", "https://example.com/pkg"]):
+            builder.main()
+        self.assertTrue((self.root / "cli/linux-amd64/release.json").exists())
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1,0 +1,67 @@
+{
+  "id": "example.coding/pr-review",
+  "version": "1.0.0",
+  "phases": [
+    {
+      "id": "context",
+      "name": "Collect context",
+      "team_ref": "example.coding/reviewer"
+    },
+    {
+      "id": "analysis",
+      "name": "Analyze changes",
+      "team_ref": "example.coding/reviewer"
+    },
+    {
+      "id": "verification",
+      "name": "Verify findings",
+      "team_ref": "example.coding/reviewer"
+    },
+    {
+      "id": "synthesis",
+      "name": "Summarize review",
+      "team_ref": "example.coding/reviewer"
+    }
+  ],
+  "allowed_invokers": [
+    "ceo"
+  ],
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "request": {
+        "type": "string",
+        "minLength": 1
+      },
+      "repository": {
+        "type": "string",
+        "minLength": 1
+      },
+      "base_sha": {
+        "type": "string",
+        "minLength": 40,
+        "maxLength": 40
+      },
+      "head_sha": {
+        "type": "string",
+        "minLength": 40,
+        "maxLength": 40
+      },
+      "diff": {
+        "type": "string"
+      },
+      "focus": {
+        "type": "string"
+      },
+      "checks": {}
+    },
+    "required": [
+      "request",
+      "repository",
+      "base_sha",
+      "head_sha",
+      "diff"
+    ],
+    "additionalProperties": false
+  }
+}
